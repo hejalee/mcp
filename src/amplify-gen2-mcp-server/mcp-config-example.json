@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "awslabs.amplify-gen2-mcp-server": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/hejalee/MCP-SERVERS/mcp/src/amplify-gen2-mcp-server",
+        "python",
+        "-m",
+        "awslabs.amplify_gen2_mcp_server"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
