@@ -29,8 +29,11 @@
 """Tools for the AWS Amplify Gen2 MCP Server."""
 
 import base64
+import json
 import logging
+import os
 import requests
+from datetime import datetime, timedelta
 from .consts import (
     DEFAULT_SEARCH_LIMIT,
     DOCUMENTATION_REPO,
@@ -39,6 +42,13 @@ from .consts import (
     SAMPLE_REPOSITORIES,
 )
 from typing import Any, Dict, List, Optional
+
+try:
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -1647,3 +1657,1350 @@ cat amplify/backend.ts
 
 {docs_reference}
     """
+
+
+def get_amplify_lambda_help(ctx, topic: str = None) -> str:
+    """Get comprehensive help for Amplify Gen2 Lambda function parameters and usage.
+
+    Args:
+        ctx: MCP context (unused but required for consistency)
+        topic: Optional specific topic to focus on (e.g., "event", "context", "handler", "examples")
+
+    Returns:
+        Comprehensive Lambda function help documentation
+    """
+    
+    base_help = """
+# AWS Amplify Gen2 Lambda Functions - Parameter Guide
+
+## Overview
+Lambda functions in Amplify Gen2 are serverless functions that can be triggered by various events and integrated with your Amplify backend resources like data, authentication, and storage.
+
+## Function Handler Signature
+
+### Node.js/TypeScript Handler
+```typescript
+export const handler = async (event: any, context: any): Promise<any> => {
+    // Your function logic here
+    return {
+        statusCode: 200,
+        body: JSON.stringify({ message: 'Success' })
+    };
+};
+```
+
+### Python Handler
+```python
+def lambda_handler(event, context):
+    # Your function logic here
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'message': 'Success'})
+    }
+```
+
+## Event Object Structure
+
+The `event` parameter contains the input data for your Lambda function. The structure varies based on how the function is invoked:
+
+### 1. Direct Invocation (Test Events)
+```json
+{
+    "key1": "value1",
+    "key2": "value2",
+    "customData": {
+        "nested": "object"
+    }
+}
+```
+
+### 2. API Gateway Integration
+```json
+{
+    "httpMethod": "POST",
+    "path": "/api/endpoint",
+    "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer token"
+    },
+    "body": "{\\"data\\": \\"value\\"}",
+    "queryStringParameters": {
+        "param1": "value1"
+    },
+    "pathParameters": {
+        "id": "123"
+    }
+}
+```
+
+### 3. Cognito Triggers
+```json
+{
+    "version": "1",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_XXXXXXXXX",
+    "userName": "user@example.com",
+    "request": {
+        "userAttributes": {
+            "email": "user@example.com",
+            "email_verified": "true"
+        }
+    },
+    "response": {}
+}
+```
+
+### 4. S3 Events
+```json
+{
+    "Records": [
+        {
+            "eventVersion": "2.1",
+            "eventSource": "aws:s3",
+            "eventName": "ObjectCreated:Put",
+            "s3": {
+                "bucket": {
+                    "name": "my-bucket"
+                },
+                "object": {
+                    "key": "uploads/file.jpg",
+                    "size": 1024
+                }
+            }
+        }
+    ]
+}
+```
+
+## Context Object Properties
+
+The `context` parameter provides runtime information about the Lambda function execution:
+
+```typescript
+interface LambdaContext {
+    // Function metadata
+    functionName: string;           // Name of the Lambda function
+    functionVersion: string;        // Version of the function
+    invokedFunctionArn: string;     // ARN of the invoked function
+    
+    // Request metadata
+    awsRequestId: string;           // Unique request ID
+    logGroupName: string;           // CloudWatch log group
+    logStreamName: string;          // CloudWatch log stream
+    
+    // Runtime information
+    memoryLimitInMB: string;        // Memory allocated to function
+    getRemainingTimeInMillis(): number; // Time remaining in execution
+    
+    // Client context (mobile apps)
+    clientContext?: {
+        client: {
+            installation_id: string;
+            app_title: string;
+            app_version_name: string;
+            app_version_code: string;
+            app_package_name: string;
+        };
+        env: {
+            platform_version: string;
+            platform: string;
+            make: string;
+            model: string;
+            locale: string;
+        };
+    };
+    
+    // Cognito identity (authenticated users)
+    identity?: {
+        cognitoIdentityId: string;
+        cognitoIdentityPoolId: string;
+    };
+}
+```
+
+## Amplify Gen2 Function Definition
+
+### Basic Function Definition
+```typescript
+// amplify/functions/my-function/resource.ts
+import { defineFunction } from '@aws-amplify/backend';
+
+export const myFunction = defineFunction({
+    name: 'my-function',
+    entry: './handler.ts'
+});
+```
+
+### Function with Environment Variables
+```typescript
+// amplify/functions/my-function/resource.ts
+import { defineFunction } from '@aws-amplify/backend';
+
+export const myFunction = defineFunction({
+    name: 'my-function',
+    entry: './handler.ts',
+    environment: {
+        API_URL: 'https://api.example.com',
+        DEBUG_MODE: 'true'
+    }
+});
+```
+
+### Function with Data Access
+```typescript
+// amplify/functions/data-access/resource.ts
+import { defineFunction } from '@aws-amplify/backend';
+
+export const dataAccessFunction = defineFunction({
+    name: 'data-access',
+    entry: './handler.ts'
+});
+
+// In amplify/data/resource.ts
+import { dataAccessFunction } from '../functions/data-access/resource';
+
+const schema = a.schema({
+    Todo: a.model({
+        content: a.string(),
+        done: a.boolean()
+    })
+}).authorization(allow => [
+    allow.resource(dataAccessFunction)
+]);
+```
+
+## Common Function Patterns
+
+### 1. Data Processing Function
+```typescript
+// amplify/functions/process-data/handler.ts
+import type { Handler } from 'aws-lambda';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
+import type { Schema } from '../../data/resource';
+
+const amplifyConfig = getAmplifyDataClientConfig();
+Amplify.configure(amplifyConfig);
+const client = generateClient<Schema>();
+
+export const handler: Handler = async (event, context) => {
+    console.log('Event:', JSON.stringify(event, null, 2));
+    console.log('Context:', JSON.stringify(context, null, 2));
+    
+    try {
+        // Process the data
+        const result = await client.models.Todo.create({
+            content: event.content,
+            done: false
+        });
+        
+        return {
+            statusCode: 200,
+            body: JSON.stringify({
+                message: 'Data processed successfully',
+                result: result.data
+            })
+        };
+    } catch (error) {
+        console.error('Error:', error);
+        return {
+            statusCode: 500,
+            body: JSON.stringify({
+                message: 'Error processing data',
+                error: error.message
+            })
+        };
+    }
+};
+```
+
+### 2. Authentication Trigger Function
+```typescript
+// amplify/functions/auth-trigger/handler.ts
+import type { PreSignUpTriggerHandler } from 'aws-lambda';
+
+export const handler: PreSignUpTriggerHandler = async (event, context) => {
+    console.log('Pre-signup event:', JSON.stringify(event, null, 2));
+    
+    // Auto-confirm user
+    event.response.autoConfirmUser = true;
+    event.response.autoVerifyEmail = true;
+    
+    // Add custom attributes
+    event.response.userAttributes = {
+        ...event.request.userAttributes,
+        'custom:role': 'user'
+    };
+    
+    return event;
+};
+```
+
+### 3. File Processing Function
+```typescript
+// amplify/functions/process-file/handler.ts
+import type { S3Handler } from 'aws-lambda';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+
+const s3Client = new S3Client({});
+
+export const handler: S3Handler = async (event, context) => {
+    console.log('S3 event:', JSON.stringify(event, null, 2));
+    
+    for (const record of event.Records) {
+        const bucket = record.s3.bucket.name;
+        const key = record.s3.object.key;
+        
+        try {
+            // Get the object from S3
+            const command = new GetObjectCommand({
+                Bucket: bucket,
+                Key: key
+            });
+            
+            const response = await s3Client.send(command);
+            console.log(`Processed file: ${key} from bucket: ${bucket}`);
+            
+            // Process the file content here
+            
+        } catch (error) {
+            console.error(`Error processing file ${key}:`, error);
+        }
+    }
+    
+    return { statusCode: 200 };
+};
+```
+
+## Environment Variables Access
+
+### Node.js/TypeScript
+```typescript
+export const handler = async (event, context) => {
+    const apiUrl = process.env.API_URL;
+    const debugMode = process.env.DEBUG_MODE === 'true';
+    
+    if (debugMode) {
+        console.log('Debug mode enabled');
+    }
+    
+    // Use environment variables
+};
+```
+
+### Python
+```python
+import os
+
+def lambda_handler(event, context):
+    api_url = os.environ.get('API_URL')
+    debug_mode = os.environ.get('DEBUG_MODE') == 'true'
+    
+    if debug_mode:
+        print('Debug mode enabled')
+    
+    # Use environment variables
+```
+
+## Error Handling Best Practices
+
+### Structured Error Responses
+```typescript
+export const handler = async (event, context) => {
+    try {
+        // Function logic
+        return {
+            statusCode: 200,
+            body: JSON.stringify({ success: true, data: result })
+        };
+    } catch (error) {
+        console.error('Function error:', error);
+        
+        return {
+            statusCode: 500,
+            body: JSON.stringify({
+                success: false,
+                error: {
+                    message: error.message,
+                    type: error.constructor.name,
+                    requestId: context.awsRequestId
+                }
+            })
+        };
+    }
+};
+```
+
+## Testing Lambda Functions
+
+### Local Testing
+```typescript
+// test/handler.test.ts
+import { handler } from '../amplify/functions/my-function/handler';
+
+describe('Lambda Handler', () => {
+    it('should process event correctly', async () => {
+        const event = {
+            key: 'test-value'
+        };
+        
+        const context = {
+            awsRequestId: 'test-request-id',
+            functionName: 'test-function',
+            getRemainingTimeInMillis: () => 30000
+        };
+        
+        const result = await handler(event, context);
+        expect(result.statusCode).toBe(200);
+    });
+});
+```
+
+## Common Event Sources and Their Parameters
+
+### 1. API Gateway REST API
+- `event.httpMethod`: HTTP method (GET, POST, etc.)
+- `event.path`: Request path
+- `event.headers`: Request headers
+- `event.body`: Request body (string)
+- `event.queryStringParameters`: Query parameters
+- `event.pathParameters`: Path parameters
+
+### 2. API Gateway HTTP API
+- `event.version`: Event version
+- `event.routeKey`: Route key
+- `event.rawPath`: Raw path
+- `event.headers`: Request headers
+- `event.body`: Request body
+- `event.queryStringParameters`: Query parameters
+
+### 3. Cognito User Pool Triggers
+- `event.userPoolId`: User pool ID
+- `event.userName`: Username
+- `event.request`: Request data
+- `event.response`: Response data to modify
+
+### 4. S3 Events
+- `event.Records[].s3.bucket.name`: Bucket name
+- `event.Records[].s3.object.key`: Object key
+- `event.Records[].eventName`: Event type
+
+### 5. DynamoDB Streams
+- `event.Records[].dynamodb.Keys`: Item keys
+- `event.Records[].dynamodb.NewImage`: New item data
+- `event.Records[].dynamodb.OldImage`: Old item data
+- `event.Records[].eventName`: Event type (INSERT, MODIFY, REMOVE)
+
+## Debugging Tips
+
+1. **Use console.log extensively**:
+   ```typescript
+   console.log('Event:', JSON.stringify(event, null, 2));
+   console.log('Context:', JSON.stringify(context, null, 2));
+   ```
+
+2. **Check CloudWatch Logs**:
+   - Function logs appear in CloudWatch
+   - Use structured logging for better searchability
+
+3. **Test with different event types**:
+   - Create test events in Lambda console
+   - Use AWS SAM for local testing
+
+4. **Monitor function metrics**:
+   - Duration, error rate, throttles
+   - Memory usage and timeout issues
+
+## Related Documentation
+- [AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/latest/dg/)
+- [Amplify Gen2 Functions](https://docs.amplify.aws/react/build-a-backend/functions/)
+- [AWS Lambda Event Sources](https://docs.aws.amazon.com/lambda/latest/dg/lambda-services.html)
+"""
+
+    # Topic-specific help sections
+    topic_specific = {
+        "event": """
+## Event Object Deep Dive
+
+The event object structure depends on the trigger source:
+
+### Custom Event Structure
+When invoking directly or through custom triggers:
+```json
+{
+    "customField": "value",
+    "data": {
+        "nested": "object"
+    },
+    "array": [1, 2, 3]
+}
+```
+
+### API Gateway Event Structure
+```json
+{
+    "resource": "/users/{id}",
+    "path": "/users/123",
+    "httpMethod": "GET",
+    "headers": {
+        "Accept": "application/json",
+        "Authorization": "Bearer token"
+    },
+    "multiValueHeaders": {},
+    "queryStringParameters": {
+        "filter": "active"
+    },
+    "multiValueQueryStringParameters": {},
+    "pathParameters": {
+        "id": "123"
+    },
+    "stageVariables": null,
+    "requestContext": {
+        "requestId": "request-id",
+        "stage": "prod",
+        "resourceId": "resource-id",
+        "httpMethod": "GET",
+        "resourcePath": "/users/{id}",
+        "path": "/prod/users/123",
+        "accountId": "123456789012",
+        "apiId": "api-id",
+        "protocol": "HTTP/1.1",
+        "requestTime": "09/Apr/2015:12:34:56 +0000",
+        "requestTimeEpoch": 1428582896000,
+        "identity": {
+            "cognitoIdentityPoolId": null,
+            "accountId": null,
+            "cognitoIdentityId": null,
+            "caller": null,
+            "sourceIp": "127.0.0.1",
+            "principalOrgId": null,
+            "accessKey": null,
+            "cognitoAuthenticationType": null,
+            "cognitoAuthenticationProvider": null,
+            "userArn": null,
+            "userAgent": "Custom User Agent String",
+            "user": null
+        }
+    },
+    "body": "{\\"key\\": \\"value\\"}",
+    "isBase64Encoded": false
+}
+```
+        """,
+        
+        "context": """
+## Context Object Deep Dive
+
+The context object provides runtime information:
+
+### Available Properties
+```typescript
+interface LambdaContext {
+    // Function identification
+    functionName: string;           // "my-amplify-function"
+    functionVersion: string;        // "$LATEST" or version number
+    invokedFunctionArn: string;     // Full ARN of the function
+    
+    // Request tracking
+    awsRequestId: string;           // Unique ID for this invocation
+    logGroupName: string;           // "/aws/lambda/my-function"
+    logStreamName: string;          // "2023/01/01/[$LATEST]abcd1234"
+    
+    // Runtime limits
+    memoryLimitInMB: string;        // "128", "256", etc.
+    getRemainingTimeInMillis(): number; // Time left before timeout
+    
+    // Optional context (mobile/web apps)
+    clientContext?: ClientContext;
+    identity?: CognitoIdentity;
+}
+```
+
+### Using Context for Monitoring
+```typescript
+export const handler = async (event, context) => {
+    const startTime = Date.now();
+    
+    console.log(`Function: ${context.functionName}`);
+    console.log(`Request ID: ${context.awsRequestId}`);
+    console.log(`Memory limit: ${context.memoryLimitInMB}MB`);
+    console.log(`Time remaining: ${context.getRemainingTimeInMillis()}ms`);
+    
+    // Your function logic
+    
+    const duration = Date.now() - startTime;
+    console.log(`Execution duration: ${duration}ms`);
+    
+    return { statusCode: 200 };
+};
+```
+        """,
+        
+        "handler": """
+## Handler Function Patterns
+
+### Basic Handler Structure
+```typescript
+export const handler = async (event: any, context: any): Promise<any> => {
+    // Initialization (runs once per container)
+    
+    try {
+        // Main logic
+        const result = await processEvent(event);
+        
+        return {
+            statusCode: 200,
+            body: JSON.stringify(result)
+        };
+    } catch (error) {
+        console.error('Handler error:', error);
+        
+        return {
+            statusCode: 500,
+            body: JSON.stringify({
+                error: error.message,
+                requestId: context.awsRequestId
+            })
+        };
+    }
+};
+```
+
+### Typed Handler (TypeScript)
+```typescript
+import type { APIGatewayProxyHandler, APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+
+export const handler: APIGatewayProxyHandler = async (
+    event: APIGatewayProxyEvent,
+    context: Context
+): Promise<APIGatewayProxyResult> => {
+    // Type-safe handler implementation
+    
+    return {
+        statusCode: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+            message: 'Success',
+            requestId: context.awsRequestId
+        })
+    };
+};
+```
+
+### Handler with Amplify Data Access
+```typescript
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
+import type { Schema } from '../../data/resource';
+
+// Initialize Amplify (outside handler for reuse)
+const amplifyConfig = getAmplifyDataClientConfig();
+Amplify.configure(amplifyConfig);
+const client = generateClient<Schema>();
+
+export const handler = async (event, context) => {
+    try {
+        // Access Amplify data
+        const todos = await client.models.Todo.list();
+        
+        return {
+            statusCode: 200,
+            body: JSON.stringify({
+                todos: todos.data,
+                count: todos.data.length
+            })
+        };
+    } catch (error) {
+        console.error('Data access error:', error);
+        throw error;
+    }
+};
+```
+        """,
+        
+        "examples": """
+## Complete Function Examples
+
+### 1. User Registration Handler
+```typescript
+// amplify/functions/user-registration/handler.ts
+import type { PostConfirmationTriggerHandler } from 'aws-lambda';
+import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
+
+const dynamoClient = new DynamoDBClient({});
+
+export const handler: PostConfirmationTriggerHandler = async (event, context) => {
+    console.log('Post-confirmation event:', JSON.stringify(event, null, 2));
+    
+    try {
+        // Create user profile in DynamoDB
+        await dynamoClient.send(new PutItemCommand({
+            TableName: process.env.USER_TABLE_NAME,
+            Item: {
+                userId: { S: event.request.userAttributes.sub },
+                email: { S: event.request.userAttributes.email },
+                createdAt: { S: new Date().toISOString() },
+                status: { S: 'active' }
+            }
+        }));
+        
+        console.log(`User profile created for: ${event.request.userAttributes.email}`);
+        
+    } catch (error) {
+        console.error('Error creating user profile:', error);
+        // Don't throw - this would prevent user confirmation
+    }
+    
+    return event;
+};
+```
+
+### 2. File Processing Handler
+```typescript
+// amplify/functions/process-upload/handler.ts
+import type { S3Handler } from 'aws-lambda';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import sharp from 'sharp';
+
+const s3Client = new S3Client({});
+
+export const handler: S3Handler = async (event, context) => {
+    console.log('S3 event:', JSON.stringify(event, null, 2));
+    
+    for (const record of event.Records) {
+        const bucket = record.s3.bucket.name;
+        const key = record.s3.object.key;
+        
+        // Skip if not an image
+        if (!key.match(/\\.(jpg|jpeg|png|gif)$/i)) {
+            continue;
+        }
+        
+        try {
+            // Get original image
+            const getCommand = new GetObjectCommand({
+                Bucket: bucket,
+                Key: key
+            });
+            
+            const response = await s3Client.send(getCommand);
+            const imageBuffer = await response.Body?.transformToByteArray();
+            
+            if (!imageBuffer) {
+                console.error(`No image data for ${key}`);
+                continue;
+            }
+            
+            // Create thumbnail
+            const thumbnail = await sharp(Buffer.from(imageBuffer))
+                .resize(200, 200, { fit: 'inside' })
+                .jpeg({ quality: 80 })
+                .toBuffer();
+            
+            // Save thumbnail
+            const thumbnailKey = key.replace(/\\.[^.]+$/, '_thumb.jpg');
+            
+            await s3Client.send(new PutObjectCommand({
+                Bucket: bucket,
+                Key: thumbnailKey,
+                Body: thumbnail,
+                ContentType: 'image/jpeg'
+            }));
+            
+            console.log(`Thumbnail created: ${thumbnailKey}`);
+            
+        } catch (error) {
+            console.error(`Error processing ${key}:`, error);
+        }
+    }
+    
+    return { statusCode: 200 };
+};
+```
+
+### 3. API Endpoint Handler
+```typescript
+// amplify/functions/api-handler/handler.ts
+import type { APIGatewayProxyHandler } from 'aws-lambda';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
+import type { Schema } from '../../data/resource';
+
+const amplifyConfig = getAmplifyDataClientConfig();
+Amplify.configure(amplifyConfig);
+const client = generateClient<Schema>();
+
+export const handler: APIGatewayProxyHandler = async (event, context) => {
+    console.log('API request:', JSON.stringify(event, null, 2));
+    
+    const { httpMethod, path, body, queryStringParameters } = event;
+    
+    try {
+        switch (httpMethod) {
+            case 'GET':
+                if (path.includes('/todos')) {
+                    const todos = await client.models.Todo.list({
+                        limit: queryStringParameters?.limit ? 
+                            parseInt(queryStringParameters.limit) : 10
+                    });
+                    
+                    return {
+                        statusCode: 200,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        body: JSON.stringify({
+                            todos: todos.data,
+                            nextToken: todos.nextToken
+                        })
+                    };
+                }
+                break;
+                
+            case 'POST':
+                if (path.includes('/todos')) {
+                    const todoData = JSON.parse(body || '{}');
+                    
+                    const newTodo = await client.models.Todo.create({
+                        content: todoData.content,
+                        done: false
+                    });
+                    
+                    return {
+                        statusCode: 201,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        body: JSON.stringify({
+                            todo: newTodo.data
+                        })
+                    };
+                }
+                break;
+                
+            default:
+                return {
+                    statusCode: 405,
+                    headers: {
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    body: JSON.stringify({
+                        error: 'Method not allowed'
+                    })
+                };
+        }
+        
+        return {
+            statusCode: 404,
+            headers: {
+                'Access-Control-Allow-Origin': '*'
+            },
+            body: JSON.stringify({
+                error: 'Not found'
+            })
+        };
+        
+    } catch (error) {
+        console.error('API handler error:', error);
+        
+        return {
+            statusCode: 500,
+            headers: {
+                'Access-Control-Allow-Origin': '*'
+            },
+            body: JSON.stringify({
+                error: 'Internal server error',
+                requestId: context.awsRequestId
+            })
+        };
+    }
+};
+```
+
+### 4. Scheduled Function Handler
+```typescript
+// amplify/functions/scheduled-task/handler.ts
+import type { ScheduledHandler } from 'aws-lambda';
+import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
+import type { Schema } from '../../data/resource';
+
+const sesClient = new SESClient({});
+const amplifyConfig = getAmplifyDataClientConfig();
+Amplify.configure(amplifyConfig);
+const client = generateClient<Schema>();
+
+export const handler: ScheduledHandler = async (event, context) => {
+    console.log('Scheduled event:', JSON.stringify(event, null, 2));
+    
+    try {
+        // Get pending notifications
+        const notifications = await client.models.Notification.list({
+            filter: {
+                status: { eq: 'pending' },
+                scheduledFor: { le: new Date().toISOString() }
+            }
+        });
+        
+        console.log(`Found ${notifications.data.length} pending notifications`);
+        
+        for (const notification of notifications.data) {
+            try {
+                // Send email
+                await sesClient.send(new SendEmailCommand({
+                    Source: process.env.FROM_EMAIL,
+                    Destination: {
+                        ToAddresses: [notification.email]
+                    },
+                    Message: {
+                        Subject: {
+                            Data: notification.subject
+                        },
+                        Body: {
+                            Text: {
+                                Data: notification.body
+                            }
+                        }
+                    }
+                }));
+                
+                // Update notification status
+                await client.models.Notification.update({
+                    id: notification.id,
+                    status: 'sent',
+                    sentAt: new Date().toISOString()
+                });
+                
+                console.log(`Notification sent: ${notification.id}`);
+                
+            } catch (error) {
+                console.error(`Failed to send notification ${notification.id}:`, error);
+                
+                // Mark as failed
+                await client.models.Notification.update({
+                    id: notification.id,
+                    status: 'failed',
+                    error: error.message
+                });
+            }
+        }
+        
+        return {
+            statusCode: 200,
+            body: JSON.stringify({
+                processed: notifications.data.length,
+                timestamp: new Date().toISOString()
+            })
+        };
+        
+    } catch (error) {
+        console.error('Scheduled task error:', error);
+        throw error;
+    }
+};
+```
+        """
+    }
+    
+    if topic and topic.lower() in topic_specific:
+        return base_help + "\n\n" + topic_specific[topic.lower()]
+    
+    return base_help
+
+
+def get_amplify_lambda_logs(ctx, function_name: str, hours: int = 1, region: str = None, profile: str = None) -> str:
+    """Get Lambda function logs for Amplify Gen2 functions from CloudWatch.
+
+    Args:
+        ctx: MCP context (unused but required for consistency)
+        function_name: Name of the Lambda function (can be partial name for search)
+        hours: Number of hours to look back for logs (default: 1)
+        region: AWS region (defaults to us-east-1 or AWS_DEFAULT_REGION)
+        profile: AWS profile to use (defaults to default profile)
+
+    Returns:
+        Formatted log entries from CloudWatch Logs
+    """
+    
+    if not BOTO3_AVAILABLE:
+        return """
+# Lambda Logs - boto3 Not Available
+
+## Error
+The boto3 library is not available. To use Lambda logs functionality, install boto3:
+
+```bash
+pip install boto3
+```
+
+## Alternative Methods
+
+### 1. AWS CLI
+```bash
+# List log groups
+aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/"
+
+# Get recent logs
+aws logs filter-log-events --log-group-name "/aws/lambda/your-function-name" --start-time $(date -d '1 hour ago' +%s)000
+
+# Follow logs in real-time
+aws logs tail "/aws/lambda/your-function-name" --follow
+```
+
+### 2. AWS Console
+1. Go to AWS Lambda console
+2. Select your function
+3. Click on "Monitor" tab
+4. Click "View logs in CloudWatch"
+
+### 3. Amplify CLI
+```bash
+# View function logs
+npx ampx logs function <function-name>
+
+# Follow logs
+npx ampx logs function <function-name> --follow
+```
+        """
+    
+    try:
+        # Set up AWS session
+        session_kwargs = {}
+        if profile:
+            session_kwargs['profile_name'] = profile
+        if region:
+            session_kwargs['region_name'] = region
+        elif os.environ.get('AWS_DEFAULT_REGION'):
+            session_kwargs['region_name'] = os.environ.get('AWS_DEFAULT_REGION')
+        else:
+            session_kwargs['region_name'] = 'us-east-1'
+        
+        session = boto3.Session(**session_kwargs)
+        logs_client = session.client('logs')
+        lambda_client = session.client('lambda')
+        
+        # Calculate time range
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=hours)
+        start_timestamp = int(start_time.timestamp() * 1000)
+        end_timestamp = int(end_time.timestamp() * 1000)
+        
+        # Find matching Lambda functions
+        matching_functions = []
+        try:
+            paginator = lambda_client.get_paginator('list_functions')
+            for page in paginator.paginate():
+                for func in page['Functions']:
+                    if function_name.lower() in func['FunctionName'].lower():
+                        matching_functions.append({
+                            'name': func['FunctionName'],
+                            'arn': func['FunctionArn'],
+                            'runtime': func['Runtime'],
+                            'last_modified': func['LastModified']
+                        })
+        except ClientError as e:
+            return f"""
+# Lambda Logs - Error Listing Functions
+
+## Error
+Failed to list Lambda functions: {str(e)}
+
+## Possible Solutions
+1. Check AWS credentials are configured
+2. Verify IAM permissions for Lambda:ListFunctions
+3. Ensure correct region is specified
+4. Check if the AWS profile is valid
+
+## Required IAM Permissions
+```json
+{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "lambda:ListFunctions",
+                "logs:DescribeLogGroups",
+                "logs:DescribeLogStreams",
+                "logs:FilterLogEvents"
+            ],
+            "Resource": "*"
+        }}
+    ]
+}}
+```
+            """
+        
+        if not matching_functions:
+            return f"""
+# Lambda Logs - No Functions Found
+
+## Search Results
+No Lambda functions found matching: **{function_name}**
+
+## Suggestions
+1. Check the function name spelling
+2. Verify the function exists in region: **{session_kwargs.get('region_name', 'us-east-1')}**
+3. Try a partial name search
+4. List all functions to see available options
+
+## List All Functions
+Use the AWS CLI to see all functions:
+```bash
+aws lambda list-functions --region {session_kwargs.get('region_name', 'us-east-1')}
+```
+
+## Common Amplify Function Naming Patterns
+- `amplify-<app-name>-<env>-<function-name>-<hash>`
+- Functions often have long generated names in Amplify
+            """
+        
+        # Get logs for each matching function
+        results = []
+        
+        for func in matching_functions[:5]:  # Limit to first 5 matches
+            func_name = func['name']
+            log_group_name = f"/aws/lambda/{func_name}"
+            
+            try:
+                # Check if log group exists
+                logs_client.describe_log_groups(logGroupNamePrefix=log_group_name)
+                
+                # Get log events
+                response = logs_client.filter_log_events(
+                    logGroupName=log_group_name,
+                    startTime=start_timestamp,
+                    endTime=end_timestamp,
+                    limit=100  # Limit to recent 100 events per function
+                )
+                
+                events = response.get('events', [])
+                
+                if events:
+                    results.append({
+                        'function': func,
+                        'events': events,
+                        'log_group': log_group_name
+                    })
+                else:
+                    results.append({
+                        'function': func,
+                        'events': [],
+                        'log_group': log_group_name,
+                        'no_events': True
+                    })
+                    
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                    results.append({
+                        'function': func,
+                        'events': [],
+                        'log_group': log_group_name,
+                        'error': 'Log group not found (function may not have been invoked yet)'
+                    })
+                else:
+                    results.append({
+                        'function': func,
+                        'events': [],
+                        'log_group': log_group_name,
+                        'error': str(e)
+                    })
+        
+        # Format results
+        output = f"""
+# Lambda Logs for "{function_name}"
+
+**Time Range:** {start_time.strftime('%Y-%m-%d %H:%M:%S')} - {end_time.strftime('%Y-%m-%d %H:%M:%S')} UTC
+**Region:** {session_kwargs.get('region_name', 'us-east-1')}
+**Profile:** {profile or 'default'}
+
+"""
+        
+        for result in results:
+            func = result['function']
+            events = result.get('events', [])
+            log_group = result['log_group']
+            
+            output += f"""
+## Function: {func['name']}
+
+**Details:**
+- **ARN:** {func['arn']}
+- **Runtime:** {func['runtime']}
+- **Last Modified:** {func['last_modified']}
+- **Log Group:** {log_group}
+
+"""
+            
+            if result.get('error'):
+                output += f"""
+**Error:** {result['error']}
+
+"""
+            elif result.get('no_events'):
+                output += f"""
+**No log events found** in the last {hours} hour(s).
+
+**Possible reasons:**
+- Function hasn't been invoked recently
+- Function completed without logging
+- Logs may be in a different time range
+
+**To get more logs:**
+```bash
+aws logs filter-log-events --log-group-name "{log_group}" --start-time $(date -d '24 hours ago' +%s)000
+```
+
+"""
+            else:
+                output += f"""
+**Log Events ({len(events)} entries):**
+
+"""
+                for event in events[-20:]:  # Show last 20 events
+                    timestamp = datetime.fromtimestamp(event['timestamp'] / 1000)
+                    message = event['message'].strip()
+                    
+                    # Format different types of log messages
+                    if message.startswith('START RequestId:'):
+                        output += f"🟢 **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                    elif message.startswith('END RequestId:'):
+                        output += f"🔴 **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                    elif message.startswith('REPORT RequestId:'):
+                        output += f"📊 **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                    elif 'ERROR' in message.upper() or 'Exception' in message:
+                        output += f"❌ **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                    elif 'WARN' in message.upper():
+                        output += f"⚠️ **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                    else:
+                        output += f"ℹ️ **{timestamp.strftime('%H:%M:%S')}** - {message}\n"
+                
+                output += "\n"
+        
+        # Add helpful commands
+        output += f"""
+## Useful Commands
+
+### Get More Logs
+```bash
+# Get logs for specific function
+aws logs filter-log-events --log-group-name "/aws/lambda/{matching_functions[0]['name']}" --start-time $(date -d '24 hours ago' +%s)000
+
+# Follow logs in real-time
+aws logs tail "/aws/lambda/{matching_functions[0]['name']}" --follow
+
+# Get logs with specific filter
+aws logs filter-log-events --log-group-name "/aws/lambda/{matching_functions[0]['name']}" --filter-pattern "ERROR"
+```
+
+### Amplify CLI Commands
+```bash
+# View function logs
+npx ampx logs function {function_name}
+
+# Follow function logs
+npx ampx logs function {function_name} --follow
+```
+
+### CloudWatch Console
+[View in CloudWatch Console](https://console.aws.amazon.com/cloudwatch/home?region={session_kwargs.get('region_name', 'us-east-1')}#logsV2:log-groups/log-group/$252Faws$252Flambda$252F{matching_functions[0]['name'].replace('/', '$252F') if matching_functions else 'function-name'})
+
+## Troubleshooting
+
+### No Logs Appearing
+1. **Function not invoked**: Trigger the function to generate logs
+2. **Permissions**: Ensure Lambda has CloudWatch Logs permissions
+3. **Time range**: Try expanding the time range
+4. **Region**: Verify you're looking in the correct region
+
+### Common Log Patterns
+- **Cold starts**: Look for "START RequestId" without recent activity
+- **Timeouts**: Check for missing "END RequestId" messages
+- **Memory issues**: Look for "Process exited before completing request"
+- **Errors**: Search for "ERROR", "Exception", or error stack traces
+        """
+        
+        return output
+        
+    except NoCredentialsError:
+        return """
+# Lambda Logs - AWS Credentials Not Found
+
+## Error
+AWS credentials are not configured.
+
+## Setup AWS Credentials
+
+### Option 1: AWS CLI
+```bash
+aws configure
+```
+
+### Option 2: Environment Variables
+```bash
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+### Option 3: AWS Profile
+```bash
+aws configure --profile your-profile-name
+```
+
+### Option 4: IAM Role (EC2/Lambda)
+If running on AWS infrastructure, ensure the IAM role has the required permissions.
+
+## Required IAM Permissions
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "lambda:ListFunctions",
+                "logs:DescribeLogGroups",
+                "logs:DescribeLogStreams",
+                "logs:FilterLogEvents"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+        """
+    
+    except Exception as e:
+        return f"""
+# Lambda Logs - Unexpected Error
+
+## Error
+{str(e)}
+
+## Troubleshooting Steps
+1. Check AWS credentials and permissions
+2. Verify the region is correct
+3. Ensure the function name exists
+4. Check network connectivity to AWS
+
+## Manual Alternatives
+```bash
+# List all Lambda functions
+aws lambda list-functions
+
+# Get logs directly
+aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/"
+aws logs filter-log-events --log-group-name "/aws/lambda/your-function-name"
+```
+        """

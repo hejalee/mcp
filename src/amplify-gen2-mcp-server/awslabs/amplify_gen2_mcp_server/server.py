@@ -22,6 +22,8 @@ from .tools import (
     generate_amplify_gen2_code,
     get_amplify_gen2_best_practices,
     get_amplify_gen2_guidance,
+    get_amplify_lambda_help,
+    get_amplify_lambda_logs,
     read_amplify_documentation,
     search_amplify_gen2_documentation,
     troubleshoot_amplify_gen2,
@@ -136,6 +138,35 @@ def troubleshoot_amplify_gen2_tool(issue: str) -> str:
         Comprehensive troubleshooting guidance from official sources
     """
     return troubleshoot_amplify_gen2(None, issue)
+
+
+@mcp.tool()
+def get_amplify_lambda_help_tool(topic: str = None) -> str:
+    """Get comprehensive help for Amplify Gen2 Lambda function parameters and usage.
+
+    Args:
+        topic: Optional specific topic to focus on (e.g., "event", "context", "handler", "examples")
+
+    Returns:
+        Comprehensive Lambda function help documentation with parameter structures and examples
+    """
+    return get_amplify_lambda_help(None, topic)
+
+
+@mcp.tool()
+def get_amplify_lambda_logs_tool(function_name: str, hours: int = 1, region: str = None, profile: str = None) -> str:
+    """Get Lambda function logs for Amplify Gen2 functions from CloudWatch.
+
+    Args:
+        function_name: Name of the Lambda function (can be partial name for search)
+        hours: Number of hours to look back for logs (default: 1)
+        region: AWS region (defaults to us-east-1 or AWS_DEFAULT_REGION)
+        profile: AWS profile to use (defaults to default profile)
+
+    Returns:
+        Formatted log entries from CloudWatch Logs with timestamps and helpful commands
+    """
+    return get_amplify_lambda_logs(None, function_name, hours, region, profile)
 
 
 def main():

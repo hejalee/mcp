@@ -1,0 +1,50 @@
+{
+  "test_scenarios": {
+    "basic_functionality": {
+      "description": "Basic functionality tests for all servers",
+      "tests": [
+        "Server Health Check"
+      ]
+    },
+    "amplify_comprehensive": {
+      "description": "Comprehensive Amplify Gen2 testing",
+      "servers": ["awslabs.amplify-gen2-mcp-server"],
+      "tests": [
+        "Server Health Check",
+        "Amplify Guidance", 
+        "Amplify Code Generation",
+        "Lambda Logs"
+      ]
+    },
+    "documentation_tests": {
+      "description": "AWS Documentation server testing",
+      "servers": ["awslabs.aws-documentation-mcp-server"],
+      "tests": [
+        "Server Health Check",
+        "Documentation Search",
+        "Documentation Read"
+      ]
+    }
+  },
+  "test_data": {
+    "amplify_topics": [
+      "authentication",
+      "storage",
+      "api",
+      "hosting",
+      "functions"
+    ],
+    "aws_doc_queries": [
+      "S3 bucket policies",
+      "Lambda functions",
+      "API Gateway",
+      "CloudFormation"
+    ],
+    "frameworks": [
+      "react",
+      "vue",
+      "angular",
+      "nextjs"
+    ]
+  }
+}

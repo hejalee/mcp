@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "awslabs.amplify-gen2-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/hejalee/mcp.git#subdirectory=src/amplify-gen2-mcp-server",
+        "awslabs.amplify-gen2-mcp-server"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
