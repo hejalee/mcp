@@ -14,23 +14,27 @@
 
 import os
 import sys
+from .core.agent_scripts.manager import AGENT_SCRIPTS_MANAGER
 from .core.aws.driver import translate_cli_to_ir
 from .core.aws.service import (
     execute_awscli_customization,
-    get_local_credentials,
     interpret_command,
     is_operation_read_only,
+    request_consent,
     validate,
 )
 from .core.common.config import (
     DEFAULT_REGION,
+    ENABLE_AGENT_SCRIPTS,
     FASTMCP_LOG_LEVEL,
     READ_ONLY_KEY,
     READ_OPERATIONS_ONLY_MODE,
+    REQUIRE_MUTATION_CONSENT,
     WORKING_DIRECTORY,
     get_server_directory,
 )
 from .core.common.errors import AwsApiMcpError
+from .core.common.helpers import validate_aws_region
 from .core.common.models import (
     AwsApiMcpServerErrorResponse,
     AwsCliAliasResponse,
@@ -41,8 +45,9 @@ from .core.metadata.read_only_operations_list import ReadOnlyOperations, get_rea
 from botocore.exceptions import NoCredentialsError
 from loguru import logger
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
-from typing import Annotated, Any, Optional, cast
+from typing import Annotated, Any, Optional
 
 
 logger.remove()
@@ -111,6 +116,9 @@ READ_OPERATIONS_INDEX: Optional[ReadOnlyOperations] = None
         - Required parameters
         - Description of what the command does
     """,
+    annotations=ToolAnnotations(
+        title='Suggest AWS CLI commands', readOnlyHint=True, openWorldHint=False
+    ),
 )
 async def suggest_aws_commands(
     query: Annotated[
@@ -122,12 +130,18 @@ async def suggest_aws_commands(
     ctx: Context,
 ) -> dict[str, Any] | AwsApiMcpServerErrorResponse:
     """Suggest AWS CLI commands based on the provided query."""
+    logger.info('Suggesting AWS commands for query: {}', query)
     if not query.strip():
         error_message = 'Empty query provided'
         await ctx.error(error_message)
         return AwsApiMcpServerErrorResponse(detail=error_message)
     try:
-        return knowledge_base.get_suggestions(query)
+        suggestions = knowledge_base.get_suggestions(query)
+        logger.info(
+            'Suggested commands: {}',
+            [suggestion.get('command') for suggestion in suggestions.get('suggestions', {})],
+        )
+        return suggestions
     except Exception as e:
         error_message = f'Error while suggesting commands: {str(e)}'
         await ctx.error(error_message)
@@ -167,6 +181,12 @@ async def suggest_aws_commands(
     Returns:
         CLI execution results with API response data or error message
     """,
+    annotations=ToolAnnotations(
+        title='Execute AWS CLI commands',
+        readOnlyHint=READ_OPERATIONS_ONLY_MODE,
+        destructiveHint=not READ_OPERATIONS_ONLY_MODE,
+        openWorldHint=True,
+    ),
 )
 async def call_aws(
     cli_command: Annotated[
@@ -179,6 +199,7 @@ async def call_aws(
     ] = None,
 ) -> ProgramInterpretationResponse | AwsApiMcpServerErrorResponse | AwsCliAliasResponse:
     """Call AWS with the given CLI command and return the result as a dictionary."""
+    logger.info('Executing AWS CLI command: {}', cli_command)
     try:
         ir = translate_cli_to_ir(cli_command)
         ir_validation = validate(ir)
@@ -191,19 +212,6 @@ async def call_aws(
             return AwsApiMcpServerErrorResponse(
                 detail=error_message,
             )
-
-        if READ_OPERATIONS_ONLY_MODE and (
-            READ_OPERATIONS_INDEX is None or not is_operation_read_only(ir, READ_OPERATIONS_INDEX)
-        ):
-            error_message = (
-                'Execution of this operation is not allowed because read only mode is enabled. '
-                f'It can be disabled by setting the {READ_ONLY_KEY} environment variable to False.'
-            )
-            await ctx.error(error_message)
-            return AwsApiMcpServerErrorResponse(
-                detail=error_message,
-            )
-
     except AwsApiMcpError as e:
         error_message = f'Error while validating the command: {e.as_failure().reason}'
         await ctx.error(error_message)
@@ -218,19 +226,29 @@ async def call_aws(
         )
 
     try:
+        if READ_OPERATIONS_INDEX is None or not is_operation_read_only(ir, READ_OPERATIONS_INDEX):
+            if READ_OPERATIONS_ONLY_MODE:
+                error_message = (
+                    'Execution of this operation is not allowed because read only mode is enabled. '
+                    f'It can be disabled by setting the {READ_ONLY_KEY} environment variable to False.'
+                )
+                await ctx.error(error_message)
+                return AwsApiMcpServerErrorResponse(
+                    detail=error_message,
+                )
+            elif REQUIRE_MUTATION_CONSENT:
+                await request_consent(cli_command, ctx)
+
         if ir.command and ir.command.is_awscli_customization:
             response: AwsCliAliasResponse | AwsApiMcpServerErrorResponse = (
-                execute_awscli_customization(cli_command)
+                execute_awscli_customization(cli_command, ir.command)
             )
             if isinstance(response, AwsApiMcpServerErrorResponse):
                 await ctx.error(response.detail)
             return response
 
-        creds = get_local_credentials()
         return interpret_command(
             cli_command=cli_command,
-            credentials=creds,
-            default_region=cast(str, DEFAULT_REGION),
             max_results=max_results,
         )
     except NoCredentialsError:
@@ -257,17 +275,60 @@ async def call_aws(
         )
 
 
+# EXPERIMENTAL: Agent scripts tool - only registered if ENABLE_AGENT_SCRIPTS is True
+if ENABLE_AGENT_SCRIPTS:
+
+    @server.tool(
+        name='get_execution_plan',
+        description=f"""Get the execution plan for a compiled AWS workflow. This tool provides structured, step-by-step guidance for accomplishing a complex task with AWS.
+        When a user request matches a plan intent, you MUST always call this tool to get an execution plan instead of attempting to come up with you own, since the procedures returned by this tool are more robust, and properly tested.
+
+        Below you can find the list of available scripts in the format <script_name> : <description>
+        {AGENT_SCRIPTS_MANAGER.pretty_print_scripts()}
+        INSTRUCTIONS:
+        - Call this tool with the specific script_name when user requests match the above patterns
+        - The returned plan contains detailed, tested procedures that you MUST follow exactly
+        - Do NOT attempt to create your own procedures for these tasks - use the provided plans
+        - Execute ALL steps in the plan without skipping any
+        - If plan instructions contradict each other, ask the user for guidance
+
+        Returns:
+            - Detailed script plan with step-by-step instructions for the requested task.
+        """,
+        annotations=ToolAnnotations(
+            title='Get structured execution plans for complex tasks',
+            readOnlyHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def get_execution_plan(
+        script_name: Annotated[str, Field(description='Name of the script to get the plan for')],
+        ctx: Context,
+    ) -> str | AwsApiMcpServerErrorResponse:
+        """Retrieve full script content given a script name."""
+        try:
+            script = AGENT_SCRIPTS_MANAGER.get_script(script_name)
+
+            if not script:
+                error_message = f'Script {script_name} not found'
+                logger.error(error_message)
+                raise ValueError(error_message)
+
+            logger.info(f'Retrieved script plan for {script_name}.')
+            return script.content
+
+        except Exception as e:
+            error_message = f'Error while retrieving execution plan: {str(e)}'
+            await ctx.error(error_message)
+            return AwsApiMcpServerErrorResponse(detail=error_message)
+
+
 def main():
     """Main entry point for the AWS API MCP server."""
     global READ_OPERATIONS_INDEX
 
-    if not WORKING_DIRECTORY:
-        error_message = 'AWS_API_MCP_WORKING_DIR environment variable is not defined.\n'
-        logger.error(error_message)
-        raise ValueError(error_message)
-
     if not os.path.isabs(WORKING_DIRECTORY):
-        error_message = 'AWS_API_MCP_WORKING_DIR must be an absolute path.\n'
+        error_message = 'AWS_API_MCP_WORKING_DIR must be an absolute path.'
         logger.error(error_message)
         raise ValueError(error_message)
 
@@ -276,10 +337,11 @@ def main():
     logger.info(f'CWD: {os.getcwd()}')
 
     if DEFAULT_REGION is None:
-        error_message = 'AWS_REGION environment variable is not defined.\n'
+        error_message = 'AWS_REGION environment variable is not defined.'
         logger.error(error_message)
         raise ValueError(error_message)
 
+    validate_aws_region(DEFAULT_REGION)
     logger.info('AWS_REGION: {}', DEFAULT_REGION)
 
     try:
@@ -289,7 +351,7 @@ def main():
         logger.error(error_message)
         raise RuntimeError(error_message)
 
-    if READ_OPERATIONS_ONLY_MODE:
+    if READ_OPERATIONS_ONLY_MODE or REQUIRE_MUTATION_CONSENT:
         READ_OPERATIONS_INDEX = get_read_only_operations()
 
     server.run(transport='stdio')
